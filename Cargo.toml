@@ -1,0 +1,3 @@
+[workspace]
+members = ["remcp", "remcp-serv", "shared_lib"]
+resolver = "2"

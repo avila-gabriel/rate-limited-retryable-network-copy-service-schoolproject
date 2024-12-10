@@ -1,0 +1,11 @@
+[package]
+name = "remcp-serv"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "remcp-serv"
+path = "src/main.rs"
+
+[dependencies]
+shared_lib = { path = "../shared_lib" }
