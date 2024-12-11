@@ -27,9 +27,11 @@ fn handle_client(
 ) -> std::io::Result<()> {
     let peer = stream.peer_addr()?;
     println!("New connection from {}", peer);
+
     let mut reader = BufReader::new(&stream);
     let mut writer = BufWriter::new(&stream);
 
+    // Read the command line from the client
     let mut command = String::new();
     if reader.read_line(&mut command)? == 0 {
         eprintln!("Client {} sent no command.", peer);
@@ -102,7 +104,7 @@ fn handle_client(
 
             let current_rate = rate_for_client.load(Ordering::SeqCst);
             let bytes_transferred = bytes_read as u64;
-            //println!("Client {} sent {} bytes.", peer, bytes_transferred);
+            println!("Client {} sent {} bytes.", peer, bytes_transferred);
 
             if current_rate > 0 {
                 thread::sleep(Duration::from_millis(
@@ -157,16 +159,16 @@ fn handle_client(
             let to_read = std::cmp::min(buffer.len() as u64, total_size - received) as usize;
             let bytes_read = reader.read(&mut buffer[..to_read])?;
             if bytes_read == 0 {
-                eprintln!("Client {} connection closed prematurely.", peer);
+                eprintln!(
+                    "Client {} connection closed prematurely. Received {} of {} bytes.",
+                    peer, received, total_size
+                );
                 break;
             }
             file.write_all(&buffer[..bytes_read])?;
             file.flush()?;
             received += bytes_read as u64;
-            //println!(
-            //    "Client {} received {} bytes. Total received: {} / {}",
-            //    peer, bytes_read, received, total_size
-            //);
+            println!("Client {} received {} bytes. Total: {} / {}", peer, bytes_read, received, total_size);
 
             let current_rate = rate_for_client.load(Ordering::SeqCst);
             if current_rate > 0 {
