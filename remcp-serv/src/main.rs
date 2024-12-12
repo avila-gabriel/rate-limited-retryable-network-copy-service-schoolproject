@@ -244,8 +244,7 @@ fn main() -> std::io::Result<()> {
         if current_clients >= MAX_CLIENTS {
             debug_eprintln!("Maximum clients reached. Rejecting new connection.");
             let mut writer = BufWriter::new(&stream);
-            writeln!(writer, "ERR Server is busy")?;
-            writer.flush()?;
+            send_error(&mut writer, GetError::ServerBusy)?;
             continue;
         }
 
