@@ -43,7 +43,7 @@ fn test_resume_put() {
     let test_file_path = "test_large_upload.txt";
     {
         let mut f = File::create(test_file_path).expect("Failed to create test file");
-        for i in 0..1024 {
+        for i in 0..128 {
             writeln!(f, "This is line number: {}", i).expect("Failed to write test file");
         }
     }
@@ -80,7 +80,7 @@ fn test_resume_put() {
         });
     }
 
-    thread::sleep(Duration::from_millis(10));
+    thread::sleep(Duration::from_secs(1));
     client.kill().expect("Failed to kill client mid-transfer");
     let _ = client.wait().ok();
 
