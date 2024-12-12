@@ -50,7 +50,7 @@ fn test_put_and_get() {
 
     let mut client = Command::new("../target/debug/remcp")
         .arg(test_file_path)
-        .arg(format!("127.0.0.1:{}", remote_file_path)) // Use <address>:<path> syntax
+        .arg(format!("127.0.0.1:{}", remote_file_path))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()

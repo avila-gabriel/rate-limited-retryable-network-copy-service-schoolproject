@@ -133,7 +133,6 @@ fn test_resume_put() {
 
     println!("Resume PUT test passed successfully.");
 
-    // Cleanup
     remove_file(test_file_path).ok();
     remove_file(&absolute_remote_file_path).ok();
 
