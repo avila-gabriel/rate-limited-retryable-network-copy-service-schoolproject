@@ -10,36 +10,80 @@ fn test_resume_put() {
     let cwd = std::env::current_dir().expect("Failed to get current directory");
     println!("Running resume test in directory: {}", cwd.display());
 
-    let mut server = Command::new("../target/debug/remcp-serv")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("Failed to start server");
+    #[cfg(unix)]
+    const LOG_FILE_PATH: &str = "/tmp/remcp-serv_daemon.log";
 
-    if let Some(stdout) = server.stdout.take() {
-        let stdout_reader = BufReader::new(stdout);
-        thread::spawn(move || {
-            for line in stdout_reader.lines() {
-                if let Ok(line) = line {
-                    println!("[SERVER STDOUT] {}", line);
-                }
-            }
-        });
+    #[cfg(not(unix))]
+    const LOG_FILE_PATH: &str = "daemon.log"; // not used on non-unix
+
+    #[cfg(unix)]
+    {
+        // On Unix, run server in daemon mode (with debug)
+        let mut server = Command::new("../target/debug/remcp-serv")
+            .arg("--debug")
+            .spawn()
+            .expect("Failed to start server in daemon mode");
+
+        // Wait for server to daemonize
+        sleep(Duration::from_secs(2));
+
+        run_resume_put_test_logic(&cwd);
+
+        // Server logs and output are in LOG_FILE_PATH if needed
+        // Wait a bit to ensure logs are flushed
+        sleep(Duration::from_secs(1));
+
+        // If you need to verify logs, you can read LOG_FILE_PATH here:
+        // let server_content = read_to_string(LOG_FILE_PATH).expect("Failed to read daemon log file");
+        // let server_lines: Vec<String> = server_content.lines().map(|s| s.to_string()).collect();
+        // If you want to verify something in logs, do it here.
+
+        // Kill server
+        server.kill().ok();
+        server.wait().ok();
     }
 
-    if let Some(stderr) = server.stderr.take() {
-        let stderr_reader = BufReader::new(stderr);
-        thread::spawn(move || {
-            for line in stderr_reader.lines() {
-                if let Ok(line) = line {
-                    eprintln!("[SERVER STDERR] {}", line);
+    #[cfg(not(unix))]
+    {
+        // On Windows (non-Unix), run as before, capturing stdout/stderr
+        let mut server = Command::new("../target/debug/remcp-serv")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("Failed to start server");
+
+        if let Some(stdout) = server.stdout.take() {
+            let stdout_reader = BufReader::new(stdout);
+            thread::spawn(move || {
+                for line in stdout_reader.lines() {
+                    if let Ok(line) = line {
+                        println!("[SERVER STDOUT] {}", line);
+                    }
                 }
-            }
-        });
+            });
+        }
+
+        if let Some(stderr) = server.stderr.take() {
+            let stderr_reader = BufReader::new(stderr);
+            thread::spawn(move || {
+                for line in stderr_reader.lines() {
+                    if let Ok(line) = line {
+                        eprintln!("[SERVER STDERR] {}", line);
+                    }
+                }
+            });
+        }
+
+        sleep(Duration::from_secs(2));
+
+        run_resume_put_test_logic(&cwd);
+
+        server.kill().ok();
+        server.wait().ok();
     }
+}
 
-    thread::sleep(Duration::from_secs(2));
-
+fn run_resume_put_test_logic(cwd: &std::path::Path) {
     let test_file_path = "test_large_upload.txt";
     {
         let mut f = File::create(test_file_path).expect("Failed to create test file");
@@ -80,7 +124,7 @@ fn test_resume_put() {
         });
     }
 
-    thread::sleep(Duration::from_secs(1));
+    sleep(Duration::from_secs(1));
     client.kill().expect("Failed to kill client mid-transfer");
     let _ = client.wait().ok();
 
@@ -135,7 +179,4 @@ fn test_resume_put() {
 
     remove_file(test_file_path).ok();
     remove_file(&absolute_remote_file_path).ok();
-
-    server.kill().ok();
-    server.wait().ok();
 }
