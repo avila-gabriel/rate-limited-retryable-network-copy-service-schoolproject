@@ -29,17 +29,17 @@ fn rate_limit(bytes_read: usize) {
 fn calculate_chunk_size() -> usize {
     let active = ACTIVE_CLIENTS.load(Ordering::SeqCst);
     if active == 0 {
-        return unsafe { TRANSFER_RATE } as usize;
+        return unsafe { TRANSFER_RATE };
     }
     let per_client_rate = std::cmp::max(1, unsafe { TRANSFER_RATE } / active);
-    per_client_rate as usize
+    per_client_rate
 }
 
 fn handle_get(
     reader: &mut BufReader<&TcpStream>,
     writer: &mut BufWriter<&TcpStream>,
     remote_path: &std::path::Path,
-    offset: u64,
+    offset: usize,
 ) -> io::Result<()> {
     let _ = reader;
 
@@ -54,7 +54,7 @@ fn handle_get(
         }
     };
 
-    let filesize = file.metadata()?.len();
+    let filesize = file.metadata()?.len() as usize;
     if offset >= filesize {
         debug_println!("Offset >= filesize. Sending 'OK 0'.");
         writeln!(writer, "OK 0")?;
@@ -62,20 +62,20 @@ fn handle_get(
         return Ok(());
     }
 
-    file.seek(SeekFrom::Start(offset))?;
+    file.seek(SeekFrom::Start(offset as u64))?;
     let remaining = filesize - offset;
     writeln!(writer, "OK {}", remaining)?;
     writer.flush()?;
     debug_println!("Sent 'OK {}' to client for GET.", remaining);
 
-    let mut total_sent = 0u64;
+    let mut total_sent = 0;
     while total_sent < remaining {
         let chunk_size = calculate_chunk_size();
         writeln!(writer, "NEXT {}", chunk_size)?;
         writer.flush()?;
         debug_println!("GET: Sent 'NEXT {}' to client.", chunk_size);
 
-        let to_read = std::cmp::min(chunk_size as u64, remaining - total_sent) as usize;
+        let to_read = std::cmp::min(chunk_size, remaining - total_sent);
         let mut buffer = vec![0u8; to_read];
         let bytes_read = file.read(&mut buffer)?;
 
@@ -86,7 +86,7 @@ fn handle_get(
 
         writer.write_all(&buffer[..bytes_read])?;
         writer.flush()?;
-        total_sent += bytes_read as u64;
+        total_sent += bytes_read;
         debug_println!("GET: Sent {} bytes. Total sent: {} / {}", bytes_read, total_sent, remaining);
 
         rate_limit(bytes_read);
@@ -100,8 +100,8 @@ fn handle_put(
     reader: &mut BufReader<&TcpStream>,
     writer: &mut BufWriter<&TcpStream>,
     remote_path: &std::path::Path,
-    offset: u64,
-    total_size: u64,
+    offset: usize,
+    total_size: usize,
 ) -> io::Result<()> {
     debug_println!(
         "Handling PUT request: path='{}', offset={}, total_size={}",
@@ -126,7 +126,7 @@ fn handle_put(
         }
     };
 
-    file.seek(SeekFrom::Start(offset))?;
+    file.seek(SeekFrom::Start(offset as u64))?;
     writeln!(writer, "OK")?;
     writer.flush()?;
     debug_println!("Acknowledged PUT request. Ready to receive data.");
@@ -148,10 +148,10 @@ fn handle_put(
             break;
         }
 
-        let bytes_to_write = std::cmp::min(bytes_read as u64, total_size - received) as usize;
+        let bytes_to_write = std::cmp::min(bytes_read, total_size - received);
         file.write_all(&buffer[..bytes_to_write])?;
         file.flush()?;
-        received += bytes_to_write as u64;
+        received += bytes_to_write;
 
         debug_println!("PUT: Received {} bytes. Total received: {} / {}", bytes_to_write, received, total_size);
 
@@ -204,7 +204,7 @@ fn handle_client(stream: TcpStream) -> io::Result<()> {
             return Ok(());
         }
         let remote_path = normalize_path(parts[1]);
-        let offset: u64 = parts[2].parse().unwrap_or(0);
+        let offset: usize = parts[2].parse().unwrap_or(0);
         handle_get(&mut reader, &mut writer, &remote_path, offset)?;
     } else if cmd == "PUT" {
         if parts.len() < 4 {
@@ -213,8 +213,8 @@ fn handle_client(stream: TcpStream) -> io::Result<()> {
             return Ok(());
         }
         let remote_path = normalize_path(parts[1]);
-        let offset: u64 = parts[2].parse().unwrap_or(0);
-        let total_size: u64 = parts[3].parse().unwrap_or(0);
+        let offset: usize = parts[2].parse().unwrap_or(0);
+        let total_size: usize = parts[3].parse().unwrap_or(0);
         handle_put(&mut reader, &mut writer, &remote_path, offset, total_size)?;
     } else {
         debug_eprintln!("Unknown command '{}' from {}", cmd, peer);
