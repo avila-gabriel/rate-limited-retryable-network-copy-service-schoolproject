@@ -1,21 +1,36 @@
-use std::env;
+use std::time::Duration;
+use std::{env, thread, process};
 use std::fs::{File, OpenOptions, rename};
-use std::io::{BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
+use std::io::{BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write, Result};
 use std::net::TcpStream;
-use std::path::Path;
-use std::process;
+use std::path::PathBuf;
 use shared_lib::{parse_server_response, normalize_path, ServerResponse, debug_println, debug_eprintln};
 
-fn split_host_path(remote: &str) -> (String, String) {
-    if let Some(idx) = remote.find(':') {
-        let host = &remote[..idx];
-        let path = &remote[idx + 1..];
-        return (host.to_string(), path.to_string());
-    }
-    (remote.to_string(), ":".to_string())
+const MAX_RETRIES: usize = 5;
+
+struct EndpointPaths {
+    remote_host: String,
+    remote_path: String,
+    local_path: PathBuf,
 }
 
-fn determine_offset_and_part_path(local_path: &Path) -> (u64, std::path::PathBuf) {
+fn split_host_path(remote: &str, local_path: &str) -> EndpointPaths {
+    if let Some(idx) = remote.find(':') {
+        EndpointPaths {
+            remote_host: remote[..idx].to_string(),
+            remote_path: remote[idx + 1..].to_string(),
+            local_path: normalize_path(local_path),
+        }
+    } else {
+        EndpointPaths {
+            remote_host: remote.to_string(),
+            remote_path: ":".to_string(),
+            local_path: normalize_path(local_path),
+        }
+    }
+}
+
+fn determine_offset_and_part_path(local_path: &PathBuf) -> (u64, PathBuf) {
     let part_path = local_path.with_extension("part");
     let offset = if let Ok(metadata) = std::fs::metadata(&part_path) {
         metadata.len()
@@ -25,18 +40,96 @@ fn determine_offset_and_part_path(local_path: &Path) -> (u64, std::path::PathBuf
     (offset, part_path)
 }
 
-fn do_get(remote_host: &str, remote_path: &str, local_path: &Path) -> std::io::Result<()> {
-    let (offset, part_path) = determine_offset_and_part_path(local_path);
+fn try_operation<F>(operation: F, operation_name: &str, paths: EndpointPaths) -> Result<()>
+where
+    F: Fn(&EndpointPaths) -> Result<()>,
+{
+    let mut attempt = 0;
 
-    debug_println!("Starting GET operation from '{}' to local path '{}', offset={}", remote_host, local_path.display(), offset);
-    let addr = format!("{}:7878", remote_host);
+    loop {
+        attempt += 1;
+        println!(
+            "Attempt {}/{} to {} the file...",
+            attempt, MAX_RETRIES, operation_name
+        );
+
+        match operation(&paths) {
+            Ok(_) => {
+                println!("{} operation completed successfully.", operation_name);
+                return Ok(());
+            }
+            Err(e) => {
+                if e.to_string().contains("Server is busy") {
+                    if attempt >= MAX_RETRIES {
+                        eprintln!(
+                            "Exceeded maximum retries due to 'Server is busy'. Aborting {} operation.",
+                            operation_name
+                        );
+                        return Err(e);
+                    }
+                    eprintln!(
+                        "Server is busy. Retrying {}/{} in 5 seconds...",
+                        attempt, MAX_RETRIES
+                    );
+                    thread::sleep(Duration::from_secs(5));
+                } else if let Some(os_code) = e.raw_os_error() {
+                    match os_code {
+                        10054 | 104 | 110 => {
+                            // 10054: Connection reset by peer (Windows)
+                            // 104: Connection reset by peer (Linux)
+                            // 110: Connection timed out (Linux)
+                            if attempt >= MAX_RETRIES {
+                                eprintln!(
+                                    "Exceeded maximum retries due to a retryable error. Aborting {} operation.",
+                                    operation_name
+                                );
+                                return Err(e);
+                            }
+                            eprintln!(
+                                "Retryable OS error encountered. Retrying {}/{} in 5 seconds... Error: {}",
+                                attempt, MAX_RETRIES, e
+                            );
+                            thread::sleep(Duration::from_secs(5));
+                        }
+                        _ => {
+                            eprintln!("Unexpected OS error during {} operation: {}", operation_name, e);
+                            return Err(e);
+                        }
+                    }
+                } else {
+                    eprintln!("Unexpected error during {} operation: {}", operation_name, e);
+                    return Err(e);
+                }
+            }
+        }
+    }
+}
+
+fn try_get(paths: EndpointPaths) -> Result<()> {
+    try_operation(do_get, "GET", paths)
+}
+
+fn try_put(paths: EndpointPaths) -> Result<()> {
+    try_operation(do_put, "PUT", paths)
+}
+
+fn do_get(paths: &EndpointPaths) -> Result<()> {
+    let (offset, part_path) = determine_offset_and_part_path(&paths.local_path);
+
+    debug_println!(
+        "Starting GET operation from '{}' to local path '{}', offset={}",
+        paths.remote_host,
+        paths.local_path.display(),
+        offset
+    );
+    let addr = format!("{}:7878", paths.remote_host);
     let stream = TcpStream::connect(&addr)?;
     debug_println!("Connected to server at '{}'", addr);
 
     let mut writer = BufWriter::new(&stream);
-    writeln!(writer, "GET {} {}", remote_path, offset)?;
+    writeln!(writer, "GET {} {}", paths.remote_path, offset)?;
     writer.flush()?;
-    debug_println!("Sent GET command: path='{}', offset={}", remote_path, offset);
+    debug_println!("Sent GET command: path='{}', offset={}", paths.remote_path, offset);
 
     let mut reader = BufReader::new(&stream);
     let mut response = String::new();
@@ -46,7 +139,7 @@ fn do_get(remote_host: &str, remote_path: &str, local_path: &Path) -> std::io::R
 
     match parse_server_response(response) {
         ServerResponse::Error(err) => {
-            eprintln!("Error received from server: {}", err);
+            debug_eprintln!("Error received from server: {}", err);
             return Err(std::io::Error::new(std::io::ErrorKind::Other, format!("{}", err)));
         },
         ServerResponse::Ok => {
@@ -108,7 +201,7 @@ fn do_get(remote_host: &str, remote_path: &str, local_path: &Path) -> std::io::R
 
             if received == remaining_size {
                 debug_println!("Download complete. Renaming part file to final file.");
-                rename(part_path, local_path)?;
+                rename(part_path, &paths.local_path)?;
             } else {
                 eprintln!("Incomplete download. Received {} bytes out of {}.", received, remaining_size);
                 return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "Incomplete download"));
@@ -124,21 +217,26 @@ fn do_get(remote_host: &str, remote_path: &str, local_path: &Path) -> std::io::R
     Ok(())
 }
 
-fn do_put(remote_host: &str, remote_path: &str, local_path: &Path) -> std::io::Result<()> {
-    let (offset, part_path) = determine_offset_and_part_path(local_path);
+fn do_put(paths: &EndpointPaths) -> Result<()> {
+    let (offset, part_path) = determine_offset_and_part_path(&paths.local_path);
 
-    debug_println!("Starting PUT operation: local file '{}' to remote path '{}:{}', offset={}", local_path.display(), remote_host, remote_path, offset);
-    let total_size = std::fs::metadata(local_path)?.len();
+    debug_println!(
+        "Starting PUT operation: local file to remote path '{}:{}', offset={}",
+        paths.remote_host,
+        paths.remote_path,
+        offset
+    );
+    let total_size = std::fs::metadata(&paths.local_path)?.len();
     debug_println!("File size: {} bytes", total_size);
 
-    let addr = format!("{}:7878", remote_host);
+    let addr = format!("{}:7878", paths.remote_host);
     let stream = TcpStream::connect(&addr)?;
     debug_println!("Connected to server at '{}'", addr);
 
     let mut writer = BufWriter::new(&stream);
-    writeln!(writer, "PUT {} {} {}", remote_path, offset, total_size)?;
+    writeln!(writer, "PUT {} {} {}", paths.remote_path, offset, total_size)?;
     writer.flush()?;
-    debug_println!("Sent PUT command: path='{}', offset={}, total_size={}", remote_path, offset, total_size);
+    debug_println!("Sent PUT command: path='{}', offset={}, total_size={}", paths.remote_path, offset, total_size);
 
     let mut reader = BufReader::new(&stream);
     let mut line = String::new();
@@ -158,7 +256,7 @@ fn do_put(remote_host: &str, remote_path: &str, local_path: &Path) -> std::io::R
         }
     }
 
-    let mut file = File::open(local_path)?;
+    let mut file = File::open(&paths.local_path)?;
     file.seek(SeekFrom::Start(offset))?;
     let mut part_file = OpenOptions::new().write(true).create(true).open(&part_path)?;
     part_file.seek(SeekFrom::Start(offset))?;
@@ -252,18 +350,20 @@ fn main() {
         process::exit(1);
     }
 
+    let paths = if is_src_remote {
+        split_host_path(&src, &dst)
+    } else {
+        split_host_path(&dst, &src)
+    };
+
     if is_src_remote {
-        let (host, remote_path) = split_host_path(&src);
-        let local_path = normalize_path(&dst);
-        if let Err(e) = do_get(&host, &remote_path, &local_path) {
+        if let Err(e) = try_get(paths) {
             eprintln!("GET operation failed: {}", e);
         } else {
             println!("GET operation succeeded.");
         }
     } else {
-        let (host, remote_path) = split_host_path(&dst);
-        let local_path = normalize_path(&src);
-        if let Err(e) = do_put(&host, &remote_path, &local_path) {
+        if let Err(e) = try_put(paths) {
             eprintln!("PUT operation failed: {}", e);
         } else {
             println!("PUT operation succeeded.");
