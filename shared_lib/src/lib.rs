@@ -3,7 +3,6 @@ pub mod debug_utils;
 mod err_utils;
 
 pub use err_utils::{GetError, parse_server_response, ServerResponse};
-pub use debug_utils::init_debug_mode;
 
 pub fn normalize_path(path: &str) -> PathBuf {
     if cfg!(windows) {

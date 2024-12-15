@@ -319,14 +319,11 @@ fn main() {
 
     for arg in args.iter().skip(1) {
         if arg == "--debug" {
-            shared_lib::init_debug_mode(true);
-            debug_println!("Debug mode enabled.");
+            unsafe { shared_lib::debug_utils::DEBUG_MODE = true };
+            println!("Debug mode enabled.");
         } else {
             positional_args.push(arg.clone());
         }
-    }
-    if !args.iter().any(|a| a == "--debug") {
-        shared_lib::init_debug_mode(false);
     }
 
     if positional_args.len() != 2 {

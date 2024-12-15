@@ -2,12 +2,12 @@ use std::fs::{File, OpenOptions, create_dir_all};
 use std::io::{self, Read, Write, BufRead, BufReader, BufWriter, Seek, SeekFrom};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::thread;
+use std::{thread, env, process};
 use std::time::Duration;
 use shared_lib::{GetError, normalize_path, debug_eprintln, debug_println};
 
-const TRANSFER_RATE: usize = 256;
-const MAX_CLIENTS: usize = 5;
+static mut TRANSFER_RATE: usize = 256;
+static mut MAX_CLIENTS: usize = 5;
 static ACTIVE_CLIENTS: AtomicUsize = AtomicUsize::new(0);
 
 fn send_error<W: Write>(writer: &mut W, err: GetError) -> io::Result<()> {
@@ -20,7 +20,7 @@ fn send_error<W: Write>(writer: &mut W, err: GetError) -> io::Result<()> {
 fn rate_limit(bytes_read: usize) {
     let active = ACTIVE_CLIENTS.load(Ordering::SeqCst);
     if active > 0 {
-        let per_client_rate = std::cmp::max(1, TRANSFER_RATE / active);
+        let per_client_rate = std::cmp::max(1, unsafe { TRANSFER_RATE } / active);
         let delay_ms = (bytes_read * 1000) / per_client_rate;
         thread::sleep(Duration::from_millis(delay_ms as u64));
     }
@@ -29,9 +29,9 @@ fn rate_limit(bytes_read: usize) {
 fn calculate_chunk_size() -> usize {
     let active = ACTIVE_CLIENTS.load(Ordering::SeqCst);
     if active == 0 {
-        return TRANSFER_RATE as usize;
+        return unsafe { TRANSFER_RATE } as usize;
     }
-    let per_client_rate = std::cmp::max(1, TRANSFER_RATE / active);
+    let per_client_rate = std::cmp::max(1, unsafe { TRANSFER_RATE } / active);
     per_client_rate as usize
 }
 
@@ -226,21 +226,64 @@ fn handle_client(stream: TcpStream) -> io::Result<()> {
 }
 
 fn main() -> io::Result<()> {
-    let args: Vec<String> = std::env::args().collect();
-    if args.len() == 2 && args[1] == "--debug" {
-        shared_lib::init_debug_mode(true);
-    } else {
-        shared_lib::init_debug_mode(false);
+    let args: Vec<String> = env::args().collect();
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--debug" => {
+                unsafe { shared_lib::debug_utils::DEBUG_MODE = true };
+                println!("Debug mode enabled.");
+            }
+            "--max-clients" => {
+                if i + 1 < args.len() {
+                    unsafe {
+                        MAX_CLIENTS = match args[i + 1].parse() {
+                            Ok(val) => val,
+                            Err(_) => {
+                                eprintln!("Error: Invalid value for --max-clients");
+                                process::exit(1);
+                            }
+                        };
+                    }
+                    i += 1;
+                } else {
+                    eprintln!("Error: Missing value for --max-clients");
+                    process::exit(1);
+                }
+            }
+            "--transfer-rate" => {
+                if i + 1 < args.len() {
+                    unsafe {
+                        TRANSFER_RATE = match args[i + 1].parse() {
+                            Ok(val) => val,
+                            Err(_) => {
+                                eprintln!("Error: Invalid value for --transfer-rate");
+                                process::exit(1);
+                            }
+                        };
+                    }
+                    i += 1;
+                } else {
+                    eprintln!("Error: Missing value for --transfer-rate");
+                    process::exit(1);
+                }
+            }
+            _ => {
+                eprintln!("Error: Unknown argument '{}'", args[i]);
+                process::exit(1);
+            }
+        }
+        i += 1;
     }
-
-    let listener = TcpListener::bind("0.0.0.0:7878")?;
+    
+    let listener = TcpListener::bind("127.0.0.1:7878")?;
     debug_println!("Server running on port 7878");
 
     for stream in listener.incoming() {
         let stream = stream?;
         let current_clients = ACTIVE_CLIENTS.load(Ordering::SeqCst);
 
-        if current_clients >= MAX_CLIENTS {
+        if current_clients >= unsafe { MAX_CLIENTS } {
             eprintln!("Maximum clients reached. Rejecting new connection.");
             let mut writer = BufWriter::new(&stream);
             send_error(&mut writer, GetError::ServerBusy)?;
